@@ -1,0 +1,9 @@
+{
+  "name": "openclaw-db",
+  "type": "postgres",
+  "billing": {
+    "deploymentPlan": "micro",
+    "storage": 1024,
+    "replicas": 1
+  }
+}

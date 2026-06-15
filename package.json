@@ -1,0 +1,22 @@
+{
+  "name": "goose-openclaw-mcp",
+  "version": "1.0.0",
+  "description": "Bidirectional MCP bridge: Goose (GitHub Actions) <-> OpenClaw 28-agent swarm",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "daemon": "powershell -File run-daemon.ps1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.21.0"
+  }
+}
