@@ -31,6 +31,8 @@ const ALLOWED_COMMANDS = [
   /^pm2 (restart|reload|stop|start|list|jlist|flush)/,
   /^node .+\.cjs$/,
   /^node .+\.js$/,
+  /^python .+\.py$/,
+  /^git .+/
 ];
 
 function isAllowed(cmd) {
@@ -51,12 +53,12 @@ const handlers = {
 
   pm2_restart({ process_name }) {
     if (!process_name) throw new Error('process_name is required');
-    const out = execSync(`pm2 restart ${process_name}`, { timeout: 30000 }).toString();
+    const out = execSync(`pm2 restart ${process_name}`, { timeout: 30000, windowsHide: true }).toString();
     return `✅ Restarted ${process_name}\n${out.trim()}`;
   },
 
   pm2_status() {
-    const raw = execSync('pm2 jlist', { timeout: 15000 }).toString();
+    const raw = execSync('pm2 jlist', { timeout: 15000, windowsHide: true }).toString();
     const list = JSON.parse(raw);
     const summary = list.map(p =>
       `${p.name}: ${p.pm2_env?.status} | restarts=${p.pm2_env?.restart_time}`
@@ -90,8 +92,55 @@ const handlers = {
     if (!isAllowed(command)) {
       throw new Error(`Command not in allowlist: ${command}`);
     }
-    const out = execSync(command, { timeout: 30000 }).toString();
+    const out = execSync(command, { timeout: 30000, windowsHide: true }).toString();
     return out.trim() || '(no output)';
+  },
+
+  query_local_db({ sql_query, params = [] }) {
+    if (!sql_query) throw new Error('sql_query is required');
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync('C:/Users/arvin/.openclaw/swarm_blackboard.db');
+    if (sql_query.trim().toUpperCase().startsWith('SELECT')) {
+      const stmt = db.prepare(sql_query);
+      return JSON.stringify(stmt.all(...params), null, 2);
+    } else {
+      const stmt = db.prepare(sql_query);
+      const info = stmt.run(...params);
+      return JSON.stringify(info, null, 2);
+    }
+  },
+
+  async diagnose_and_heal({ process_name, error_log_path, instruction }) {
+    return `⚠️ diagnose_and_heal has been disabled due to arbitrary file write risks.`;
+  },
+
+  forward_ticket({ ticket_type, data }) {
+    if (!ticket_type || !data) throw new Error('ticket_type and data are required');
+    const tmpId = Date.now();
+    const tmpScriptFile = `C:/AG-Custom-Swarm/hive_mind/tmp_forward_${tmpId}.py`;
+    const tmpDataFile = `C:/AG-Custom-Swarm/hive_mind/tmp_data_${tmpId}.json`;
+    
+    require('fs').writeFileSync(tmpDataFile, JSON.stringify(data), 'utf8');
+    
+    const script = `
+import sys
+import json
+sys.path.append(r"C:\\AG-Custom-Swarm\\hive_mind")
+from telemetry_logger import hive_forward
+try:
+    with open(r"${tmpDataFile}", "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    tid = hive_forward("goose_maintenance_bridge", "${ticket_type}", payload)
+    print("SUCCESS: " + str(tid))
+except Exception as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+`;
+    require('fs').writeFileSync(tmpScriptFile, script, 'utf8');
+    const out = require('child_process').execSync(`"C:\\2. PYTHON A\\python.exe" "${tmpScriptFile}"`, { timeout: 15000, windowsHide: true }).toString();
+    require('fs').unlinkSync(tmpScriptFile);
+    require('fs').unlinkSync(tmpDataFile);
+    return `✅ Forwarded ticket: ${out.trim()}`;
   },
 };
 

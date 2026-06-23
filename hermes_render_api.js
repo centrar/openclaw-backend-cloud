@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -45,19 +46,43 @@ app.get('/quarantine', async (req, res) => {
 });
 
 // 3. Remote Kill Switch
+//
+// Security model:
+//   The kill order is signed with HMAC-SHA256 over a canonical string built
+//   from the (agent, reason, issued_at) tuple, using KILL_ORDER_HMAC_SECRET.
+//   The local sync bridge independently recomputes and verifies the signature
+//   before executing pm2.stop, so merely inserting a row into quarantine_log
+//   (with or without a known ordered_by value) is NOT enough to kill a process.
 app.post('/kill/:agent', async (req, res) => {
     const agentName = req.params.agent;
     const reason = req.body.reason || "Remote Cloud Order";
-    
+    const issuedAt = Date.now();
+    const nonce = crypto.randomBytes(16).toString('hex');
+
+    const secret = process.env.KILL_ORDER_HMAC_SECRET;
+    if (!secret) {
+        return res.status(500).json({ error: 'Server misconfigured: KILL_ORDER_HMAC_SECRET not set.' });
+    }
+
+    // Canonical message: each field is fixed-position, newline-delimited so a
+    // malicious agent/reason string can't reposition fields to forge a valid sig.
+    const canonical = [agentName, reason, String(issuedAt), nonce].join('\n');
+    const signature = crypto.createHmac('sha256', secret).update(canonical, 'utf8').digest('hex');
+
     // Insert into quarantine log. The local sync bridge will detect this
-    // via Supabase Realtime and execute the kill command via PM2 locally.
+    // via Supabase Realtime, verify the HMAC signature, and only then execute
+    // the kill command via PM2 locally.
     const { data, error } = await supabase
         .from('quarantine_log')
         .insert({
             agent: agentName,
-            reason: reason
+            reason: reason,
+            ordered_by: 'goose-cloud-api',
+            issued_at: issuedAt,
+            nonce: nonce,
+            signature: signature,
         });
-        
+
     if (error) return res.status(500).json({ error: error.message });
     res.json({ status: 'KILL_ORDER_DISPATCHED', target: agentName });
 });
