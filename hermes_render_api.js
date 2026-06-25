@@ -1,6 +1,8 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const { Pool } = require('pg');
 const { signKillOrder } = require('./kill_order.cjs');
+const { renderDashboard } = require('./dashboard_renderer.cjs');
 require('dotenv').config();
 
 const app = express();
@@ -10,8 +12,19 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "https://aws-1-us-west-2.pooler
 const SUPABASE_KEY = process.env.RENDER_API_KEY; // Using RENDER_API_KEY as a placeholder/secret
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Security Middleware
+// Postgres pool for direct table reads (pm2_telemetry) the Supabase JS client
+// doesn't expose well. Same connection string the MCP bridge uses.
+const pgPool = new Pool({
+    connectionString: process.env.SUPABASE_DB_URL,
+    connectionTimeoutMillis: 10000,
+    statement_timeout: 8000,
+});
+
+// Security Middleware — protects every route EXCEPT the public dashboard,
+// which is read-only observability and must be viewable in a browser without
+// a bearer token.
 app.use((req, res, next) => {
+    if (req.path === '/dashboard') return next();
     const authHeader = req.headers['authorization'];
     if (authHeader !== `Bearer ${process.env.RENDER_API_KEY}`) {
         return res.status(403).json({ error: 'Unauthorized. Iron Hermes Protocol.' });
@@ -84,6 +97,25 @@ app.post('/kill/:agent', async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
     res.json({ status: 'KILL_ORDER_DISPATCHED', target: agentName });
+});
+
+// 4. Observability Dashboard (public, read-only)
+//
+// Serves a self-contained HTML page that reads the latest pm2_telemetry row and
+// renders per-agent status + sentinel key-health + a restart-loop alert banner.
+// Auto-refreshes every 15s. This is the "zero manual intervention" observability
+// layer: surfacing the 4235-restart crash-loop in seconds instead of hours.
+// No bearer auth (see middleware above) so it's viewable in any browser.
+app.get('/dashboard', async (req, res) => {
+    try {
+        const { rows } = await pgPool.query(
+            'SELECT captured_at, host, processes, error_digest, sentinel_stats, restart_rates FROM pm2_telemetry ORDER BY captured_at DESC LIMIT 1'
+        );
+        const snapshot = rows[0] || null;
+        res.type('html').send(renderDashboard(snapshot));
+    } catch (e) {
+        res.status(500).type('html').send(`<html><body><h1>Dashboard error</h1><pre>${e.message}</pre><p>The pm2_telemetry table may not exist yet — run migration 0003_telemetry_enrichment.sql.</p></body></html>`);
+    }
 });
 
 const PORT = process.env.PORT || 3000;
