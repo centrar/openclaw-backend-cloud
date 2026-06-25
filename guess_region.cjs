@@ -1,9 +1,15 @@
-require('dotenv').config({ path: 'C:/Users/arvin/.openclaw/.env' });
+require('dotenv').config({ path: require('../ag_paths.cjs').ENV_FILE });
 const { Client } = require('pg');
 const fs = require('fs');
 
-const projectId = 'avszlntjjureghhonksz';
-const password = encodeURIComponent('ikv!!u6jr/Uab_+');
+// Credentials come from env, NOT hardcoded. (The hardcoded values were scrubbed
+// — they leaked into the public git history and must be rotated in Supabase.)
+const projectId = process.env.SUPABASE_PROJECT_ID;
+const password = encodeURIComponent(process.env.SUPABASE_DB_PASSWORD || '');
+if (!projectId || !password) {
+  console.error('Missing SUPABASE_PROJECT_ID or SUPABASE_DB_PASSWORD in env. Set them in .env.');
+  process.exit(1);
+}
 const regions = [
   'us-east-1', 'us-west-1', 'eu-west-1', 'eu-central-1', 'ap-southeast-1', 
   'ap-northeast-1', 'ap-south-1', 'sa-east-1', 'ca-central-1', 'eu-west-2',
@@ -21,9 +27,10 @@ async function findRegion() {
       console.log(`\nSUCCESS! Found region: ${region}`);
       
       // Update .env file automatically
-      let content = fs.readFileSync('C:/Users/arvin/.openclaw/.env', 'utf8');
+      const envFile = require('../ag_paths.cjs').ENV_FILE;
+      let content = fs.readFileSync(envFile, 'utf8');
       content = content.replace(/SUPABASE_DB_URL.*/g, `SUPABASE_DB_URL="${url}"`);
-      fs.writeFileSync('C:/Users/arvin/.openclaw/.env', content, 'utf8');
+      fs.writeFileSync(envFile, content, 'utf8');
       
       await client.end();
       return url;
