@@ -16,6 +16,7 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
+require('../secrets_bootstrap.cjs'); // DPAPI keystore → process.env (sync, before dotenv)
 require('dotenv').config({ path: 'C:/Users/arvin/.openclaw/.env' });
 const { execSync, execFileSync } = require('child_process');
 const { readFileSync, writeFileSync } = require('fs');

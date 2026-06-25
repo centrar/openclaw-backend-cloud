@@ -12,6 +12,11 @@ import dotenv from "dotenv";
 const require = createRequire(import.meta.url);
 const { renderDashboard } = require("./dashboard_renderer.cjs");
 
+// Load secrets from the DPAPI keystore SYNCHRONOUSLY before dotenv. On Windows
+// this populates process.env from secrets.enc (encrypted); dotenv below then
+// only fills any gaps. On Render/Linux it's a no-op (host env provides secrets).
+require("../secrets_bootstrap.cjs");
+
 dotenv.config({ path: "C:/Users/arvin/.openclaw/.env" });
 
 const AGENTS_PATH = "C:/Users/arvin/.openclaw/agents.json";

@@ -1,3 +1,4 @@
+require('../secrets_bootstrap.cjs'); // DPAPI keystore → process.env (sync, before dotenv)
 require('dotenv').config({ path: require('../ag_paths.cjs').ENV_FILE });
 const { createClient } = require('@supabase/supabase-js');
 const Database = require('better-sqlite3');

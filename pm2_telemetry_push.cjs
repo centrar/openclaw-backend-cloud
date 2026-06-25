@@ -17,6 +17,7 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
+require('../secrets_bootstrap.cjs'); // DPAPI keystore → process.env (sync, before dotenv)
 require('dotenv').config({ path: require('../ag_paths.cjs').ENV_FILE });
 const { execSync } = require('child_process');
 const { readFileSync } = require('fs');
