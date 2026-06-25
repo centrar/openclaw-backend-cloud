@@ -4,8 +4,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import pg from "pg";
 import { readFileSync } from "fs";
+import { createRequire } from "module";
 import { z } from "zod";
 import dotenv from "dotenv";
+
+// server.js is ESM; dashboard_renderer.cjs is CommonJS. createRequire bridges.
+const require = createRequire(import.meta.url);
+const { renderDashboard } = require("./dashboard_renderer.cjs");
 
 dotenv.config({ path: "C:/Users/arvin/.openclaw/.env" });
 
@@ -269,6 +274,28 @@ app.get("/health", async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ status: "error", error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// Observability Dashboard (public, read-only)
+//
+// Serves a self-contained HTML page reading the latest pm2_telemetry row.
+// Auto-refreshes every 15s. Public (no auth) so it's viewable in any browser —
+// it only reads telemetry, no write surface. The same renderer + table used by
+// hermes_render_api.js; added here too because Render runs THIS file (server.js)
+// as the entry point.
+app.get("/dashboard", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT captured_at, host, processes, error_digest, sentinel_stats, restart_rates FROM pm2_telemetry ORDER BY captured_at DESC LIMIT 1"
+    );
+    res.type("html").send(renderDashboard(rows[0] || null));
+  } catch (e) {
+    res
+      .status(500)
+      .type("html")
+      .send(`<html><body><h1>Dashboard error</h1><pre>${e.message}</pre><p>The pm2_telemetry table may not exist yet — run migration 0003_telemetry_enrichment.sql via <code>node run_migrations.cjs</code>.</p></body></html>`);
   }
 });
 
