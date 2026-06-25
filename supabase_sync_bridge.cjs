@@ -1,12 +1,13 @@
-require('dotenv').config({ path: 'C:/Users/arvin/.openclaw/.env' });
+require('dotenv').config({ path: require('../ag_paths.cjs').ENV_FILE });
 const { createClient } = require('@supabase/supabase-js');
 const Database = require('better-sqlite3');
 const path = require('path');
 const chokidar = require('chokidar');
 const { createKillOrderVerifier } = require('./kill_order.cjs');
 
-const OPENCLAW_DIR = 'C:/Users/arvin/.openclaw';
-const dbPath = path.join(OPENCLAW_DIR, 'swarm_topology.sqlite');
+const paths = require('../ag_paths.cjs');
+const OPENCLAW_DIR = paths.OPENCLAW_DIR;
+const dbPath = paths.TOPOLOGY_DB;
 const db = new Database(dbPath);
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://aws-1-us-west-2.pooler.supabase.com";
@@ -52,6 +53,31 @@ async function syncPendingEvents() {
 
 // Run sync every 5 seconds
 setInterval(syncPendingEvents, 5000);
+
+// ── Knowledge-graph mirror: push local nodes + edges to Supabase ─────────────
+// The local swarm_topology.sqlite now holds live nodes (Process/Agent/Ticket/
+// Host) and edges (ASSIGNED_TICKET, CLAIMED_TICKET, MANAGED_BY, CORRELATES_WITH)
+// written by hermes_core_daemon + graph_builder. This mirrors them to the cloud
+// knowledge_graph / knowledge_graph_edges tables so the /health endpoint and the
+// dashboard reflect real data (previously /health read an empty table).
+async function syncGraph() {
+    try {
+        const nodes = db.prepare("SELECT id AS node_id, label, properties, updated_at FROM nodes").all();
+        const edges = db.prepare("SELECT id AS edge_id, source_id, target_id, relation, properties, updated_at FROM edges").all();
+        if (nodes.length === 0) return;
+        // upsert nodes (properties is text in sqlite -> cast to jsonb by Supabase)
+        const { error: nErr } = await supabase.from('knowledge_graph').upsert(nodes, { onConflict: 'node_id' });
+        if (nErr) console.error('graph node sync error:', nErr.message);
+        // upsert edges (only if the target table exists; non-fatal if not yet migrated)
+        const { error: eErr } = await supabase.from('knowledge_graph_edges').upsert(edges, { onConflict: 'edge_id' });
+        if (eErr && !eErr.message.includes('does not exist')) console.error('graph edge sync error:', eErr.message);
+    } catch (e) {
+        // Non-fatal: the migration may not be applied yet, or tables absent.
+        console.error('graph sync skipped:', e.message);
+    }
+}
+// Run graph mirror every 60 seconds (less frequent than events; graph changes slowly)
+setInterval(syncGraph, 60000);
 
 // Subscribe to Cloud Quarantine Orders (Remote Kill Switch)
 //
