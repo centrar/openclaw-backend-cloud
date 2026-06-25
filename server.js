@@ -323,7 +323,7 @@ const RULES = [
     description: "Novel Factory crash-loop: MODEL_GONE 404 wrong API path",
     match: (proc, errorLines) =>
       proc.name === "novel_factory_orchestrator" &&
-      proc.restarts > 3 &&
+      proc.unstable_restarts > 3 &&
       errorLines.some((l) => l.includes("MODEL_GONE") && l.includes("404")),
     buildTickets: () => [
       {
@@ -365,7 +365,7 @@ const RULES = [
     description: "Process restart count exceeds 30 (crash-loop detected)",
     CRITICAL: ["novel_factory_orchestrator", "novel_factory_sentinel", "mcp_bridge_server", "mcp_cloud_sync"],
     match(proc) {
-      return this.CRITICAL.includes(proc.name) && proc.restarts > 30;
+      return this.CRITICAL.includes(proc.name) && proc.unstable_restarts > 5;
     },
     buildTickets: (proc) => [
       {

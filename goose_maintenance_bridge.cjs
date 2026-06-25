@@ -39,6 +39,62 @@ function isAllowed(cmd) {
   return ALLOWED_COMMANDS.some(r => r.test(cmd.trim()));
 }
 
+// ── query_local_db write allowlist ──────────────────────────────────────
+// Maps an SQL verb + table to a canonical "verb:table" key. SELECTs run on any
+// table; writes (INSERT/UPDATE/DELETE) only run if the key is in WRITE_ALLOWLIST.
+// DDL and PRAGMA/ATTACH are always rejected.
+const WRITE_VERBS = new Set(['INSERT', 'UPDATE', 'DELETE']);
+const DDL_VERBS = new Set([
+  'CREATE', 'DROP', 'ALTER', 'TRUNCATE', 'ATTACH', 'DETACH', 'REINDEX', 'VACUUM',
+]);
+const WRITE_ALLOWLIST = new Set([
+  // The watchdog/bridge legitimately append lifecycle + proof rows:
+  'INSERT:ticket_events',
+  'INSERT:proof_events',
+  'INSERT:hive_forwarded',
+  'INSERT:ticket_action_dedupe',
+  // Ticket lifecycle transitions (status flips, claim/release):
+  'UPDATE:tickets',
+  // task lifecycle for dispatched background jobs:
+  'INSERT:tasks',
+  'UPDATE:tasks',
+]);
+
+// Parses the LEADING statement of an SQL string into { verb, table, key }.
+// Conservative on purpose: if it can't confidently identify a single verb and a
+// single table token, it returns verb='UNKNOWN' so the allowlist check fails
+// closed. We do NOT support multi-statement input (node:sqlite prepare only
+// compiles the first statement anyway), and stacked/semicolon-terminated tails
+// are flagged as ambiguous and rejected.
+function parseSqlStatement(sql) {
+  const stripped = sql.trim().replace(/;+\s*$/, '');
+  if (stripped.includes(';')) {
+    // Refuse anything that looks like stacked statements.
+    return { verb: 'UNKNOWN', table: null, key: 'UNKNOWN:null' };
+  }
+  const tokens = stripped.split(/\s+/);
+  const verb = (tokens[0] || '').toUpperCase();
+
+  if (DDL_VERBS.has(verb) || verb === 'PRAGMA') {
+    return { verb: 'DDL', table: null, key: 'DDL:null' };
+  }
+  if (verb === 'SELECT') {
+    return { verb: 'SELECT', table: null, key: 'SELECT:null' };
+  }
+  if (WRITE_VERBS.has(verb)) {
+    // "INSERT INTO t ...", "UPDATE t ...", "DELETE FROM t ..."
+    let tableIdx = 1;
+    const secondWord = (tokens[1] || '').toUpperCase();
+    if ((verb === 'INSERT' && secondWord === 'INTO') || (verb === 'DELETE' && secondWord === 'FROM')) {
+      tableIdx = 2;
+    }
+    const tableRaw = (tokens[tableIdx] || '').replace(/[`"\[\]]/g, '');
+    if (!tableRaw) return { verb, table: null, key: `${verb}:null` };
+    return { verb, table: tableRaw, key: `${verb}:${tableRaw}` };
+  }
+  return { verb: 'UNKNOWN', table: null, key: 'UNKNOWN:null' };
+}
+
 const pool = new Pool({
   connectionString: process.env.SUPABASE_DB_URL,
   connectionTimeoutMillis: 15000,
@@ -96,17 +152,43 @@ const handlers = {
     return out.trim() || '(no output)';
   },
 
+  // query_local_db — local blackboard access for the watchdog.
+  //
+  // Security model:
+  //   This handler used to run ANY sql the caller supplied (arbitrary DDL/DML),
+  //   gated only by the same DB-write precondition as the kill switch. It now
+  //   enforces two layers:
+  //     1. READ-only by default: any SELECT (any table) runs fine — inspection
+  //        is the common, low-risk case.
+  //     2. WRITES only via a curated allowlist of (verb, table) pairs the
+  //        watchdog legitimately performs. Anything else is rejected. DDL
+  //        (CREATE/DROP/ALTER/ATTACH/PRAGMA) is always rejected.
+  //   The allowlist covers the tables that actually exist in swarm_blackboard.db
+  //   (tickets, ticket_events, proof_events, tasks, hive_forwarded,
+  //    ticket_action_dedupe). The tickets_fts* shadow tables and
+  //    sqlite_sequence are intentionally NOT writable through this handler.
   query_local_db({ sql_query, params = [] }) {
     if (!sql_query) throw new Error('sql_query is required');
+    const raw = String(sql_query);
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync('C:/Users/arvin/.openclaw/swarm_blackboard.db');
-    if (sql_query.trim().toUpperCase().startsWith('SELECT')) {
-      const stmt = db.prepare(sql_query);
-      return JSON.stringify(stmt.all(...params), null, 2);
-    } else {
-      const stmt = db.prepare(sql_query);
-      const info = stmt.run(...params);
-      return JSON.stringify(info, null, 2);
+
+    try {
+      const parsed = parseSqlStatement(raw);
+      if (parsed.verb === 'SELECT') {
+        const stmt = db.prepare(raw);
+        return JSON.stringify(stmt.all(...params), null, 2);
+      }
+      if (WRITE_ALLOWLIST.has(parsed.key)) {
+        const stmt = db.prepare(raw);
+        const info = stmt.run(...params);
+        return JSON.stringify(info, null, 2);
+      }
+      throw new Error(
+        `query_local_db write not allowed: ${parsed.verb} on ${parsed.table} is not in the allowlist`,
+      );
+    } finally {
+      db.close();
     }
   },
 
