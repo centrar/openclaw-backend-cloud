@@ -11,14 +11,15 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
-require('dotenv').config({ path: 'C:/Users/arvin/.openclaw/.env' });
+require('dotenv').config({ path: require('../ag_paths.cjs').ENV_FILE });
 const { execSync } = require('child_process');
 const { readFileSync } = require('fs');
 const { Pool } = require('pg');
 
+const paths = require('../ag_paths.cjs');
 const HOST = 'arvin-main';
 const LOG_PREFIX = '[PM2Telemetry]';
-const PM2_LOG_BASE = 'C:/Users/arvin/.pm2/logs';
+const PM2_LOG_BASE = paths.PM2_LOG_BASE;
 
 const pool = new Pool({
   connectionString: process.env.SUPABASE_DB_URL,
@@ -31,7 +32,7 @@ function warn(msg) { console.warn(`${LOG_PREFIX} ⚠️  ${msg}`); }
 
 function getPm2Status() {
   try {
-    const raw = execSync('pm2 jlist', { timeout: 15000 }).toString();
+    const raw = execSync('pm2 jlist', { timeout: 15000, windowsHide: true }).toString();
     const list = JSON.parse(raw);
     return list.map(p => ({
       id:        p.pm_id,
