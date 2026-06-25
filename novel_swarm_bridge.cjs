@@ -2,10 +2,11 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 const path = require('path');
 const { spawn } = require('child_process');
+const paths = require('../ag_paths.cjs');
 
-const STATUS_FILE = 'C:/Users/arvin/.openclaw/workspace_novel_factory_cli/NOVEL_FACTORY_STATUS.md';
-const DB_PATH = 'C:/Users/arvin/.openclaw/swarm_blackboard.db';
-const NOVEL_FACTORY_DIR = 'C:/Users/arvin/.openclaw/workspace_novel_factory_cli';
+const NOVEL_FACTORY_DIR = paths.NOVEL_FACTORY_CLI_DIR;
+const STATUS_FILE = path.join(NOVEL_FACTORY_DIR, 'NOVEL_FACTORY_STATUS.md');
+const DB_PATH = paths.BLACKBOARD_DB;
 const NOVEL_FACTORY_SCRIPT = path.join(NOVEL_FACTORY_DIR, 'novel-factory-orchestrator.js');
 
 // Logger
