@@ -1,9 +1,9 @@
 require('dotenv').config({ path: 'C:/Users/arvin/.openclaw/.env' });
-const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const Database = require('better-sqlite3');
 const path = require('path');
 const chokidar = require('chokidar');
+const { createKillOrderVerifier } = require('./kill_order.cjs');
 
 const OPENCLAW_DIR = 'C:/Users/arvin/.openclaw';
 const dbPath = path.join(OPENCLAW_DIR, 'swarm_topology.sqlite');
@@ -60,40 +60,16 @@ setInterval(syncPendingEvents, 5000);
 // (agent, reason, issued_at, nonce) string using KILL_ORDER_HMAC_SECRET and
 // compares with a constant-time check. Only if the signature is valid (and the
 // order isn't stale/replayed) does pm2.stop run.
-const KILL_ORDER_HMAC_SECRET = process.env.KILL_ORDER_HMAC_SECRET;
-const KILL_ORDER_MAX_AGE_MS = Number(process.env.KILL_ORDER_MAX_AGE_MS || 5 * 60 * 1000); // 5 min
-const seenNonces = new Set(); // simple replay guard (bounded by max-age)
-
-function verifyKillOrder(row) {
-    if (!KILL_ORDER_HMAC_SECRET) {
-        console.error('❌ KILL_ORDER_HMAC_SECRET not set on bridge — refusing ALL kill orders.');
-        return { ok: false, reason: 'bridge misconfigured (no secret)' };
-    }
-    const { agent, reason, issued_at, nonce, signature } = row;
-    if (!agent || reason === undefined || issued_at === undefined || !nonce || !signature) {
-        return { ok: false, reason: 'missing signature fields' };
-    }
-    // Replay guard: reject orders we've already honored.
-    if (seenNonces.has(nonce)) {
-        return { ok: false, reason: `replayed nonce ${nonce}` };
-    }
-    // Freshness: reject orders older than the window (defends against capture/replay).
-    const age = Date.now() - Number(issued_at);
-    if (!Number.isFinite(age) || age < 0 || age > KILL_ORDER_MAX_AGE_MS) {
-        return { ok: false, reason: `stale/future order (age=${age}ms)` };
-    }
-    // Constant-time signature comparison.
-    const canonical = [agent, reason, String(issued_at), nonce].join('\n');
-    const expected = crypto.createHmac('sha256', KILL_ORDER_HMAC_SECRET).update(canonical, 'utf8').digest('hex');
-    const sigBuf = Buffer.from(signature);
-    const expBuf = Buffer.from(expected);
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-        return { ok: false, reason: 'bad signature' };
-    }
-    seenNonces.add(nonce);
-    // Keep the nonce set bounded (drop entries older than the max-age window).
-    if (seenNonces.size > 1024) seenNonces.clear();
-    return { ok: true };
+//
+// Verification logic + canonical format live in kill_order.cjs (shared with the
+// signer in hermes_render_api.js) so the two sides cannot drift. The verifier
+// instance holds its own nonce store + secret, isolated and unit-testable.
+const killOrderVerifier = createKillOrderVerifier({
+    secret: process.env.KILL_ORDER_HMAC_SECRET,
+    maxAgeMs: Number(process.env.KILL_ORDER_MAX_AGE_MS || 5 * 60 * 1000),
+});
+if (!process.env.KILL_ORDER_HMAC_SECRET) {
+    console.error('❌ KILL_ORDER_HMAC_SECRET not set on bridge — refusing ALL kill orders.');
 }
 
 supabase
@@ -101,7 +77,7 @@ supabase
   .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'quarantine_log' }, payload => {
     console.log('🚨 Received Cloud Quarantine Order:', payload.new);
 
-    const verdict = verifyKillOrder(payload.new);
+    const verdict = killOrderVerifier.verifyKillOrder(payload.new);
     if (!verdict.ok) {
         console.error(`❌ Rejected kill order for ${payload.new.agent} — ${verdict.reason}`);
         return;
@@ -120,3 +96,9 @@ supabase
   .subscribe();
 
 console.log("✅ Supabase Sync Active. Listening for Cloud Orders (HMAC-verified)...");
+
+// Export for unit tests (the module's top-level side effects — DB open, intervals,
+// Supabase subscribe — only fire when run as the entry point, not when required).
+// Tests load kill_order.cjs directly instead, so this export is a thin re-export
+// for any integration-level checks.
+module.exports = { killOrderVerifier };

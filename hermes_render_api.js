@@ -1,6 +1,6 @@
 const express = require('express');
-const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const { signKillOrder } = require('./kill_order.cjs');
 require('dotenv').config();
 
 const app = express();
@@ -56,18 +56,17 @@ app.get('/quarantine', async (req, res) => {
 app.post('/kill/:agent', async (req, res) => {
     const agentName = req.params.agent;
     const reason = req.body.reason || "Remote Cloud Order";
-    const issuedAt = Date.now();
-    const nonce = crypto.randomBytes(16).toString('hex');
 
     const secret = process.env.KILL_ORDER_HMAC_SECRET;
     if (!secret) {
         return res.status(500).json({ error: 'Server misconfigured: KILL_ORDER_HMAC_SECRET not set.' });
     }
 
-    // Canonical message: each field is fixed-position, newline-delimited so a
-    // malicious agent/reason string can't reposition fields to forge a valid sig.
-    const canonical = [agentName, reason, String(issuedAt), nonce].join('\n');
-    const signature = crypto.createHmac('sha256', secret).update(canonical, 'utf8').digest('hex');
+    // Sign the kill order. The canonical string + HMAC live in kill_order.cjs
+    // (single source of truth, shared with the verifier). The local sync bridge
+    // recomputes the signature before executing pm2.stop, so merely inserting a
+    // row into quarantine_log is NOT enough to kill a process.
+    const order = signKillOrder({ agent: agentName, reason, secret });
 
     // Insert into quarantine log. The local sync bridge will detect this
     // via Supabase Realtime, verify the HMAC signature, and only then execute
@@ -75,12 +74,12 @@ app.post('/kill/:agent', async (req, res) => {
     const { data, error } = await supabase
         .from('quarantine_log')
         .insert({
-            agent: agentName,
-            reason: reason,
-            ordered_by: 'goose-cloud-api',
-            issued_at: issuedAt,
-            nonce: nonce,
-            signature: signature,
+            agent: order.agent,
+            reason: order.reason,
+            ordered_by: order.ordered_by,
+            issued_at: order.issuedAt,
+            nonce: order.nonce,
+            signature: order.signature,
         });
 
     if (error) return res.status(500).json({ error: error.message });
