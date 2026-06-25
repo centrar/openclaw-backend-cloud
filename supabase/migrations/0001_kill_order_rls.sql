@@ -1,5 +1,5 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- Kill-order RLS hardening (defense-in-depth for the remote kill switch)
+-- Kill-order table + RLS hardening (defense-in-depth for the remote kill switch)
 --
 -- Threat model:
 --   supabase_sync_bridge.cjs subscribes to quarantine_log inserts and runs
@@ -12,9 +12,19 @@
 --   place, so an attacker holding only the anon/published key (or none, if RLS
 --   was previously absent) cannot even stage a kill order.
 --
--- Run this in the Supabase SQL editor (or via `supabase db push`). It is
--- idempotent — safe to re-run.
+-- Self-contained: creates the table if absent, then adds the HMAC columns + RLS.
+-- Idempotent — safe to re-run.
 -- ─────────────────────────────────────────────────────────────────────────────
+
+-- 0. Create the base table if it doesn't exist (kill-switch insert target).
+create table if not exists public.quarantine_log (
+    id          bigserial primary key,
+    agent       text not null,
+    reason      text,
+    timestamp   timestamptz not null default now()
+);
+create index if not exists quarantine_log_agent_idx on public.quarantine_log (agent);
+create index if not exists quarantine_log_timestamp_idx on public.quarantine_log (timestamp desc);
 
 -- 1. Ensure the columns the HMAC signature path expects exist.
 alter table public.quarantine_log
