@@ -1,3 +1,7 @@
 node_modules/
 .env
 .DS_Store
+
+insert_nf_token.cjs
+insert_*_token.cjs
+*_token_insert.cjs
